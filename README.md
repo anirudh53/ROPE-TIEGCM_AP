@@ -92,6 +92,9 @@ Run from the repository root. A GPU is optional; one 72-hour run takes a few sec
 
 ### Data assimilation (`use_da`)
 
+The data-assimilation work (the EDR-arc filter and its COAE run) is by **Sriram Narayanan**
+(West Virginia University).
+
 `da/` contains an EDR-arc assimilation filter run (COAE latent state, 15 debris objects) for
 **2024-03-01 → 2024-07-31**. Start times should fall on 00/03/06/… UT (filter update times).
 The filter's decoder has the same weights as ROPE's but different normalization, so
@@ -143,6 +146,14 @@ tools/                driver / F10-history builders; export to rope-framework (C
 python tools/build_celestrak_drivers.py                    # downloads SW-All.csv, rewrites data/sw_celestrack_1957_ap.csv.gz
 python tools/extend_f10_history.py --sw-all data/SW-All.csv
 ```
+
+## Credits
+
+* **ROPE-TIEGCM** (models, DA and F10.7 coupling, uncertainty): Anirudh Tapedia, West Virginia University
+* **Data assimilation** (EDR-arc assimilation filter, `da/`): Sriram Narayanan, West Virginia University,
+  sriram.narayanan@mail.wvu.edu
+* **F10.7 forecaster** (`F10_Forecasting/`): Joshua D. Daniell and Piyush M. Mehta,
+  *Probabilistic Solar Proxy Forecasting with Neural Network Ensembles*, Space Weather (2023)
 
 ## Contact
 

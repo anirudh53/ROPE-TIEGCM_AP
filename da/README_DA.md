@@ -1,5 +1,7 @@
 # Density assimilation demo: PCA and COAE
 
+*Data-assimilation work by Sriram Narayanan (West Virginia University, sriram.narayanan@mail.wvu.edu).*
+
 This bundle puts thermosphere density data from 15 debris objects into a
 reduced-order density model. It compares two versions of the model:
 
