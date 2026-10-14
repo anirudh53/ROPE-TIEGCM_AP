@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+# written by tools/build_celestrak_drivers.py when it downloads
+data/SW-All.csv
+# written by rope_da.run_filter
+da/out/rom_coae_*.yaml
+da/out/config_coae_*.yaml

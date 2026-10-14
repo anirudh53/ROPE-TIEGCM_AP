@@ -1,0 +1,68 @@
+# ── ROM ──────────────────────────────────────────────────────────────────────
+rom:
+  mat_path: "../../../PyDensityEstimation/2026-01-09_v2/mat_inputs/best_storms_uu_th_0.01_ridge_122.0_aligned.mat"
+  n_components: 10
+  lat_max: 87.5         # polar cap boundary (ROM grid limit)
+
+# ── EDR input ─────────────────────────────────────────────────────────────────
+edr:
+  # Use the raw (uncalibrated) EDR estimates as assimilation observations.
+  # The calibrated file (edr_densities_geolocated_midpoint_cal.npz) exists only as a
+  # reference / post-hoc check — it must NOT be used as filter input, because feeding
+  # already-corrected densities through the KF would double-count the calibration
+  # adjustment and bias the ROM coefficients.
+  #
+  # Arcpts file: per-arc-point geolocations so the ROM is averaged over each TLE
+  # arc (EDR density is arc-averaged). The loader auto-detects the format via the
+  # `arc_idx` field. Regenerate it for the assimilation date range with the upstream
+  # EDREstimatorArcMean pipeline (writes edr_densities_geolocated_arcpts.npz).
+  # Fallback: ../../../PyROPE_TLEs_HASDM_Assim/TLEs/edr_densities_geolocated_midpoint.npz
+  npz_path: "../../../PyROPE_TLEs_HASDM_Assim/TLEs/edr_densities_geolocated_midpoint.npz"
+  prefer_calibrated: false            # always use raw rho; rho_cal is excluded by design
+  log10_clip_lo: -15.0                # log10 kg/m3 safety floor
+  log10_clip_hi: -7.0                 # log10 kg/m3 safety ceiling
+
+# ── Observation error model ───────────────────────────────────────────────────
+obs_error:
+  # The raw EDR NPZ has no sigma_log_rho field; use_npz_sigma is kept false so
+  # observation uncertainty is always taken from the empirical altitude-bin table below.
+  use_npz_sigma: false
+  # Empirical altitude-bin observation uncertainty (log10 units), covering 150–980 km
+  alt_bins_km:  [150, 200, 250, 300, 350, 400, 450, 500, 600, 800, 1000]
+  sigma_by_bin: [0.90, 0.85, 0.80, 0.75, 0.70, 0.65, 0.60, 0.60, 0.60, 0.55]
+  sigma_floor: 0.10
+  sigma_cap:   1.00
+
+# ── Altitude validity range (ROM grid bounds) ─────────────────────────────────
+arc:
+  min_alt_km: 150.0                   # below ROM grid / physical floor
+  max_alt_km: 980.0                   # ROM grid upper bound
+
+# ── Kalman filter ─────────────────────────────────────────────────────────────
+# Filter consistency note (NIS):
+#   SINDy mode runs at NIS ~= 0.4, static mode at ~= 1.3 (ideal ~= 1.0). The low
+#   SINDy NIS is consistent across all windows, so it reflects the steady-state
+#   prior covariance — the companion-form EKF predict inflates P over the 3 hourly
+#   steps faster than the measurement update tightens it. NIS < 1 is the SAFE
+#   direction: the filter is conservative/under-confident, so state estimates are
+#   unaffected but the reported posterior uncertainty is wider than the data
+#   strictly warrants. Left intentionally untuned. To calibrate toward NIS ~= 1,
+#   reduce Q_diag (less per-step covariance growth) and re-run; validate on a held-
+#   out span rather than fitting NIS on the same data.
+filter:
+  window_hours: 3.0
+  mode: "sindy"                       # "sindy" (SINDy-c dynamics) or "static" (identity predict)
+  # Process noise diagonal (length = n_components); static mode: P += diag(Q_diag)
+  Q_diag: [1.0e-3, 1.0e-3, 5.0e-4, 5.0e-4, 5.0e-4, 5.0e-4, 5.0e-4, 5.0e-4, 5.0e-4, 5.0e-4]
+  # Initial posterior covariance diagonal
+  P0_diag: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+
+# ── Output ────────────────────────────────────────────────────────────────────
+output:
+  hdf5_path: "../../results/edr_assimilation.h5"
+  checkpoint_json: "../../results/edr_assimilation.checkpoint.json"
+
+# ── Runtime ───────────────────────────────────────────────────────────────────
+runtime:
+  start_date: "2024-04-15 00:00:00"
+  end_date:   "2025-06-15 00:00:00"

@@ -1,0 +1,75 @@
+# COAE reduced-order model -- convolutional autoencoder decoder.
+#
+# Run with:
+#   cfg = rom_config.load_config('../COAE_version/configs/coae_poly2.yaml')
+# Requires torch.
+
+reduction_method: coae
+n_components: 10
+
+# SINDy model. Poly2 is the drop-in: its 255-column library layout is positionally
+# identical to the PCA models', so the propagator needs no changes. The Poly3 variants
+# have 1395 columns.
+# SINDy sparsity level th=0.001, ridge=10.0 -- 1180/2550 nonzero B_sindy.
+# Latents, drivers and stats_cae are identical to the other two variants, so the same
+# decoder and the same P0 apply; only Q differs.
+model_path: ../data/coae_model.mat
+
+# TorchScript decoder: (B, 10) -> (B, 1, 72, 36, 45), emitting *normalised* log10
+# density. Denormalised with stats_cae from the .mat above.
+decoder_path: ../data/coae_decoder.pt
+# Metal (MPS) on Apple silicon. 'auto' degrades to CPU on a machine without it, so this
+# config is portable. Measured ~14x on the n_meas=1 jacrev the filter uses (251 -> 18 ms)
+# and ~12x on the decoder forward; density agrees with the CPU path to 7e-4 %.
+# CUDA backend settings. No effect on any other device.
+#
+# TF32 truncates the conv mantissa to 10 bits: 1.2e-3 in decoded log10 density against
+# 3.8e-6 without it, i.e. 0.28% in density, against the 5% sensor error R already models.
+# cudnn.benchmark autotunes the conv algorithms for this decoder's fixed shapes.
+#
+# deterministic: true -- cudnn.benchmark stays on for speed (4.9 vs 7.0 ms/step).
+# Note it costs run-to-run variability of up to ~1.5 MAPE points, since autotuning can
+# pick different conv algorithms per process. Pass --deterministic on a run that needs
+# to be reproducible.
+allow_tf32: false
+deterministic: true
+
+device: auto
+
+# P0 / Q derived from the model's own one-step statistics.
+filter_noise_path: ../data/filter_noise_coae_poly2_th001.npz
+
+# Process-noise scale applied to Q from filter_noise_path. Read by every driver, so a long
+# run cannot silently use a different Q from the table it is meant to match.
+#
+# q_scale = 1 -- the DERIVED Q, unscaled -- and deliberately NOT tuned to NIS ~ 1. The COAE
+# filter runs at NIS 4-13. For the PCA basis the withheld MAPE is nearly flat in q
+# (22.8 -> 23.6 across three decades), so tuning to consistency is close to free; for COAE
+# it degrades sharply and monotonically (storm 2024 withheld: 14.7 at q=1, 26.8 at q=300,
+# 32.5 at q=3000). Tuning COAE to consistency costs ~12 validation points. A linear basis
+# maps a wandering latent state to a bounded field; the nonlinear decoder does not, so a
+# large Q lets the state drift into regions that fit the assimilated track while the global
+# field goes wrong. See COAE_version/run_table2.py TUNING.
+q_scale: 1.0
+
+
+grid:
+  n_lt: 72
+  n_lat: 36
+  n_alt: 45
+  lt_low: 0.0
+  lt_high: 23.6667
+  lat_low: -87.5
+  lat_high: 87.5
+  alt_low: 100.0
+  alt_high: 980.0
+
+# Propagator settings, shared with the PCA config so runs are comparable.
+propagator:
+  ar_lags: [1, 2, 3, 4, 5]
+  f10_idx: 5
+  kp_idx: 8
+  T1: 3600
+  T2: 60
+  model_name: sindy-c
+  drivers: cls
