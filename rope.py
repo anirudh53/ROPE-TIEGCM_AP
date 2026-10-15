@@ -11,6 +11,12 @@ Two switches, both off by default (= the old ROPE pipeline: IC table + F10 from 
     out = rope.run("2024-05-10 18:00", horizon=72)                     # constructor settings
     out = rope.run("2024-05-10 18:00", horizon=72, use_da=False)       # per-call override
 
+Warm-up (off by default): ROPE(warmup_hours=48) or run(..., warmup_hours=48) starts the run that
+many hours earlier from the IC table on observed drivers and returns only the requested window,
+so the IC-table error has faded by the start (as rope-framework's warmup_time_hours). It applies
+to the IC-table start only; with DA (or an explicit IC array) the IC is already the state at
+the start, so warm-up is skipped.
+
 uncertainty=True gives ROPE's model (ensemble) uncertainty, plus the input uncertainty of
 whatever is switched on, through one unscented transform over the active inputs:
     use_da             -> 10 dims (mean of the 3 DA states, DA covariance)
@@ -457,6 +463,7 @@ class ROPE:
         ic_cov_scale:   float = 1.0,              # multiplies DA sigma (filter sigma is ~70x too small)
         f10_model_type: str   = "LSTM_dynamic",   # "LSTM_dynamic" | "MLP_dynamic"
         f10_sigma:      Optional[float] = None,   # fixed F10 sigma (sfu); None = forecaster ensemble
+        warmup_hours:   int   = 0,                # spin-up hours before the start (IC-table start only)
     ):
         self.device = _safe_device(device)
         self.cfg    = ROPEConfig(decode_batch_size=decode_batch_size)
@@ -534,6 +541,9 @@ class ROPE:
         self._da_h5 = da_h5
         self.ic_cov_mode, self.ic_cov_scale = ic_cov_mode, float(ic_cov_scale)
         self.f10_model_type, self.f10_sigma = f10_model_type, f10_sigma
+        if int(warmup_hours) < 0:
+            raise ValueError("warmup_hours must be >= 0")
+        self.warmup_hours = int(warmup_hours)
         self._f10_forecaster = None
         if self.use_da:
             self._ensure_da()
@@ -624,6 +634,7 @@ class ROPE:
         ic:                 Any  = None,
         driver_df:          Optional[pd.DataFrame] = None,
         f10_sigma:          Optional[float] = None,
+        warmup_hours:       Optional[int] = None,
     ) -> Dict[str, Any]:
         """
         Run a ROPE forecast (meta fusion).
@@ -633,10 +644,13 @@ class ROPE:
         ic          : advanced, overrides use_da: "table" | "da" | array (seq_len, K) ROPE latents
         driver_df   : driver override for this call (datetime, f10, ap)
         f10_sigma   : F10 sigma (sfu) for this call; default constructor value, else forecaster spread
+        warmup_hours: spin-up hours before the start for this call (None = constructor value);
+                      IC-table start only, skipped for DA / an explicit IC array
 
         Returns dict: window_df, mean_density, density_std (if uncertainty), ic_latents,
-        ic_source, f10_source, and (when switched on) f10_forecast, f10_sigma, input_std,
-        ic_std, f10_std, model_std, model_mean_density.
+        ic_source, f10_source, warmup_hours, and (when switched on) f10_forecast, f10_sigma,
+        input_std, ic_std, f10_std, model_std, model_mean_density. All time series cover the
+        requested window only (start .. start+horizon-1), with or without warm-up.
         """
         H     = int(horizon)
         K, S  = self.cfg.latent_dim, self.cfg.seq_len
@@ -648,6 +662,17 @@ class ROPE:
         da_ic = isinstance(ic, str) and ic == "da"
         base_df = self._driver_df if driver_df is None else driver_df
 
+        # ── warm-up: IC-table start only (DA / explicit IC = the state at the start itself)
+        W = self.warmup_hours if warmup_hours is None else int(warmup_hours)
+        if W < 0:
+            raise ValueError("warmup_hours must be >= 0")
+        warmup_note = None
+        if W and not (isinstance(ic, str) and ic == "table"):
+            warmup_note = f"warm-up ({W} h) skipped: the {'DA' if da_ic else 'given'} IC is the state at the start"
+            W = 0
+        run_start = start - pd.Timedelta(hours=W)          # == start without warm-up
+        H_run     = H + W
+
         # ── F10: CSV, or forecaster mean after the start hour ──
         f10_dates = f10_mean = f10_table = None
         if use_fc:
@@ -656,12 +681,15 @@ class ROPE:
             f10_table = pd.DataFrame({"date": f10_dates, "f10_mean": f10_mean, "f10_std": f10_std})
             if f10_sigma is None:
                 f10_sigma = self.f10_sigma if self.f10_sigma is not None else float(np.mean(f10_std[:n_cover]))
-            base_df = forecast_driver_df(base_df, start, H, S, f10_dates, f10_mean)
+            base_df = forecast_driver_df(base_df, start, H, S, f10_dates, f10_mean, first=run_start)
 
         meta = {
-            "ic_source":  ic if isinstance(ic, str) else "array",
-            "f10_source": f"forecaster ({self.f10_model_type})" if use_fc else "csv",
+            "ic_source":    ic if isinstance(ic, str) else "array",
+            "f10_source":   f"forecaster ({self.f10_model_type})" if use_fc else "csv",
+            "warmup_hours": W,
         }
+        if warmup_note:
+            meta["warmup_note"] = warmup_note
         if use_fc:
             meta.update(f10_forecast=f10_table, f10_sigma=f10_sigma)
 
@@ -675,18 +703,18 @@ class ROPE:
             else:
                 z_rows = self.resolve_ic(start, ic)
                 if z_rows is None:                              # IC table: not treated as uncertain
-                    w = self._window_builder.build(base_df, start, horizon=1, seq_len=S)
+                    w = self._window_builder.build(base_df, run_start, horizon=1, seq_len=S)
                     z_rows = np.stack([self._ic_interp.get_latent_coeffs(r["f10"], r["ap"])
                                        for _, r in w.iloc[:S].iterrows()])
                 S_ic = None
-            out = self.run_input_ut(start, H, z_rows, S_ic, base_df,
-                                    f10_sigma if use_fc else None)
+            out = self.run_input_ut(run_start, H_run, z_rows, S_ic, base_df,
+                                    f10_sigma if use_fc else None, f10_origin=start)
             out.update(meta)
-            return out
+            return self._trim_warmup(out, W)
 
         # ── deterministic run (+ model UT): the old ROPE path ─
         latents = self.resolve_ic(start, ic)
-        x_chunk_np, X_init_norm, forecast_df = self._prepare(start_datetime, H, latents, base_df)
+        x_chunk_np, X_init_norm, forecast_df = self._prepare(run_start, H_run, latents, base_df)
         self._last_forecast_df = forecast_df
 
         fused, base, init_phys = self.forecast_latents(x_chunk_np[None], X_init_norm[None])
@@ -713,6 +741,22 @@ class ROPE:
             out["mean_density"] = ut_mean
             out["density_std"]  = ut_std
 
+        return self._trim_warmup(out, W)
+
+    # ----------------------------------------------------------
+    @staticmethod
+    def _trim_warmup(out: Dict[str, Any], W: int) -> Dict[str, Any]:
+        """Drop the first W (warm-up) hours from every time series in a run() result."""
+        if not W:
+            return out
+        for k in ("mean_density", "density_std", "central_density", "input_std", "ic_std",
+                  "f10_std", "model_std", "total_std", "model_mean_density"):
+            if k in out and out[k] is not None:
+                out[k] = out[k][W:]
+        for k in ("fused_latents", "sigma_densities"):
+            if k in out:
+                out[k] = out[k][:, W:]
+        out["window_df"] = out["window_df"].iloc[W:].reset_index(drop=True)
         return out
 
     # ----------------------------------------------------------
@@ -726,6 +770,7 @@ class ROPE:
         f10_sigma:    Optional[float],
         model_uncertainty:    bool = True,
         keep_sigma_densities: bool = False,
+        f10_origin=None,
     ) -> Dict[str, Any]:
         """
         Unscented transform over the active uncertain inputs, all sigma points in one batched pass.
@@ -734,7 +779,9 @@ class ROPE:
                     point shifts all rows by the same delta (central point = z_rows exactly)
         ic_cov    : (K, K) covariance of that shift, or None (IC not uncertain)
         driver_df : drivers for the central run (F10 already forecast if wanted)
-        f10_sigma : sfu; one offset on f10 after the start hour, or None (F10 not uncertain)
+        f10_sigma : sfu; one offset on f10 after the forecast origin, or None (F10 not uncertain)
+        f10_origin: forecast origin for the F10 offset (default: start_datetime; later when the run
+                    starts early for warm-up)
 
         n = K*(ic_cov given) + (f10_sigma given); 2n+1 sigma points. Model (ensemble) UT at the
         central point; density_std = sqrt(input_var + model_var). ic_std / f10_std come from
@@ -743,6 +790,8 @@ class ROPE:
         """
         K, S, H = self.cfg.latent_dim, self.cfg.seq_len, int(horizon)
         start = pd.Timestamp(start_datetime)
+        origin = start if f10_origin is None else pd.Timestamp(f10_origin)
+        H_from_origin = H - int((origin - start) / pd.Timedelta(hours=1))
         z_rows = np.asarray(z_rows, dtype=np.float64)
         z_bar = z_rows.mean(axis=0)
         n_ic = K if ic_cov is not None else 0
@@ -764,7 +813,8 @@ class ROPE:
         x_chunks, X_inits, central_fdf = [], [], None
         for b, p in enumerate(pts):
             lat = (z_rows + (p[:K] - z_bar)).astype(np.float32) if n_ic else z_rows.astype(np.float32)
-            drv = forecast_driver_df(driver_df, start, H, S, offset=float(p[n_ic])) if n_f else driver_df
+            drv = (forecast_driver_df(driver_df, origin, H_from_origin, S, offset=float(p[n_ic]), first=start)
+                   if n_f else driver_df)
             xc, Xi, fdf = self._prepare(start, H, latents=lat, driver_df=drv)
             x_chunks.append(xc)
             X_inits.append(Xi)

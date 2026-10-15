@@ -29,7 +29,16 @@ out["window_df"]      # datetime, f10, f10_41day_avg, ap used
 rope = ROPE(use_da=True, use_f10_forecaster=True)        # DA IC + forecast F10
 out  = rope.run("2024-05-10 18:00", horizon=72)
 out  = rope.run("2024-05-10 18:00", horizon=72, use_da=False)   # per-call override
+
+out  = rope.run("2024-05-10 18:00", horizon=72, use_da=False, warmup_hours=48)  # optional 48 h warm-up
 ```
+
+**Warm-up (optional, off by default).** Without DA the initial condition comes from the IC table, an
+approximation of the state at the start. `warmup_hours=48` (in `ROPE(...)` or per `run()`) starts the
+run 48 h earlier on observed drivers and returns only the requested window, so that error has faded
+by the start, the same as rope-framework's `warmup_time_hours`. With DA, warm-up is skipped (the
+assimilated state is the start itself), and with the F10 forecaster the forecast still begins at the
+start time.
 
 | `use_da` | `use_f10_forecaster` | Initial condition | F10.7 | `uncertainty=True` gives |
 |---|---|---|---|---|
@@ -59,9 +68,10 @@ DensityInterpolator(out).query("2024-05-11 06:30", lst=14.0, lat=30.0, alt_km=45
 | `ic_cov_scale` | `1.0` | multiplies the DA σ (the filter's own σ is known to be too small, see `da/README_DA.md`) |
 | `f10_model_type` | `"LSTM_dynamic"` | or `"MLP_dynamic"` |
 | `f10_sigma` | – | fixed F10 σ (sfu) instead of the forecaster's ensemble spread |
+| `warmup_hours` | `0` | spin-up hours before the start (IC-table start only; skipped with DA) |
 
-`run()` also takes `uncertainty`, `use_da`, `use_f10_forecaster`, `f10_sigma`, `driver_df`
-(per-call driver override), and `ic` (advanced: `"table"`, `"da"`, or a `(3, 10)` latent array).
+`run()` also takes `uncertainty`, `use_da`, `use_f10_forecaster`, `f10_sigma`, `warmup_hours`,
+`driver_df` (per-call driver override), and `ic` (advanced: `"table"`, `"da"`, or a `(3, 10)` latent array).
 
 ## Installation
 
@@ -80,7 +90,7 @@ Run from the repository root. A GPU is optional; one 72-hour run takes a few sec
    The CelesTrak file is built by `tools/build_celestrak_drivers.py` from CelesTrak `SW-All.csv`:
    F10.7 (observed) anchored at 00 UT and Kp/ap on 3-hour nodes, linear in between.
 2. **Initial condition.** Three hourly latent states (T-2h … T). Either interpolated from an IC table on
-   (F10, ap), or the assimilated state (`use_da`).
+   (F10, ap), optionally `warmup_hours` before the start, or the assimilated state (`use_da`).
 3. **Forecast.** 15 ensemble members roll out autoregressively in latent space; a meta-model
    weights them per step and per latent coefficient.
 4. **Decode.** The COAE decoder maps latents to log10 density.

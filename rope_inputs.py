@@ -100,15 +100,18 @@ def f10_daily_forecast(fc, start, horizon: int, model_type: str):
 
 
 def forecast_driver_df(driver_df: pd.DataFrame, start, horizon: int, seq_len: int,
-                       f10_dates=None, f10_daily=None, offset: float = 0.0) -> pd.DataFrame:
+                       f10_dates=None, f10_daily=None, offset: float = 0.0,
+                       first=None) -> pd.DataFrame:
     """
-    Driver slice for one run: observed history up to and including `start`; for hours after
-    `start`, f10 = forecast (daily values anchored at 00 UT, linear in time -- the same
-    convention as the CelesTrak CSV) + offset. f10_dates=None keeps the observed f10 there.
-    The slice keeps enough history for the 41-day average.
+    Driver slice for one run: observed history up to and including `start` (the forecast
+    origin); for hours after `start`, f10 = forecast (daily values anchored at 00 UT, linear in
+    time -- the same convention as the CelesTrak CSV) + offset. f10_dates=None keeps the observed
+    f10 there. `first` = the run's first hour if it starts earlier (warm-up); the slice keeps
+    enough history before it for the 41-day average.
     """
     start = pd.Timestamp(start)
-    lo = start - pd.Timedelta(hours=seq_len - 1 + 41 * 24 + 24)
+    first = start if first is None else min(pd.Timestamp(first), start)
+    lo = first - pd.Timedelta(hours=seq_len - 1 + 41 * 24 + 24)
     hi = start + pd.Timedelta(hours=horizon - 1)
     df = driver_df[(driver_df["datetime"] >= lo) & (driver_df["datetime"] <= hi)].copy()
     fut = (df["datetime"] > start).to_numpy()
